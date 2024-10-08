@@ -1,0 +1,27 @@
+[package]
+name = "mocker"
+version = "0.1.0"
+edition = "2021"
+description = "Mock api generator"
+authors = ["Morgan Welsch <welschmorgan@gmail.com>"]
+
+[[bin]]
+name = "mocker"
+path = "src/main.rs"
+
+[lib]
+name = "mocker"
+path = "src/lib/mod.rs"
+
+[features]
+default = ["json"]
+json = ["dep:serde_json"]
+toml = ["dep:toml"]
+yaml = ["dep:serde_yml"]
+
+[dependencies]
+clap = { version = "4.5.19", features = ["derive"] }
+serde = { version = "1.0.210", features = ["derive"] }
+serde_json = { version = "1.0.128", optional = true }
+serde_yml = { version = "0.0.12", optional = true }
+toml = { version = "0.8.19", optional = true }
