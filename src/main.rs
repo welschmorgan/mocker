@@ -6,7 +6,7 @@ use std::{
 };
 
 use clap::{Parser, Subcommand};
-use mocker::{Response, Workspace, CONFIG_NAME};
+use mocker_core::{Response, Server, Workspace, CONFIG_NAME};
 use std::io::Write;
 
 #[derive(Subcommand)]
@@ -24,21 +24,26 @@ struct Options {
   command: Command,
 }
 
-fn cmd_init() -> mocker::Result<()> {
+fn cmd_init() -> mocker_core::Result<()> {
   let w = Workspace::create(CONFIG_NAME)?;
+  println!("{:#?}", w);
   Ok(())
 }
 
-fn cmd_serve() -> mocker::Result<()> {
+fn cmd_serve() -> mocker_core::Result<()> {
   let w = Workspace::load(CONFIG_NAME)?;
-  println!("Workspace: {:#?}", w);
-  let srv = Server::new(w.config.host, w.config.port);
-  srv.listen();
+  println!("{:#?}", w);
+  let srv = Server::new(w.config);
+  srv.listen()?;
   Ok(())
 }
 
-fn run() -> mocker::Result<()> {
+fn run() -> mocker_core::Result<()> {
   let options = Options::parse();
+  if let Err(_) = std::env::var("RUST_LOG") {
+    std::env::set_var("RUST_LOG", "info");
+  }
+  pretty_env_logger::init();
   match options.command {
     Command::Init { .. } => cmd_init(),
     Command::Serve { .. } => cmd_serve(),

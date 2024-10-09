@@ -1,18 +1,25 @@
-use std::fmt::Display;
+use std::{
+  fmt::Display,
+  num::ParseIntError,
+  str::Utf8Error,
+  sync::{Arc, PoisonError},
+};
 
 pub type Result<T> = std::result::Result<T, Error>;
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub enum ErrorKind {
   IO,
+  Sync,
+  Parse,
   Unknown,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Error {
   kind: ErrorKind,
   message: Option<String>,
-  cause: Option<Box<dyn std::error::Error>>,
+  cause: Option<Arc<dyn std::error::Error>>,
 }
 
 unsafe impl Send for Error {}
@@ -22,7 +29,7 @@ impl Error {
   pub fn new(
     kind: ErrorKind,
     msg: Option<String>,
-    cause: Option<Box<dyn std::error::Error>>,
+    cause: Option<Arc<dyn std::error::Error>>,
   ) -> Self {
     Self {
       kind,
@@ -35,6 +42,8 @@ impl Error {
     match self.kind {
       ErrorKind::IO => "i/o",
       ErrorKind::Unknown => "unknown",
+      ErrorKind::Sync => "sync",
+      ErrorKind::Parse => "parse",
     }
   }
 }
@@ -96,5 +105,23 @@ impl From<serde_yml::Error> for Error {
 impl From<Box<dyn std::error::Error>> for Error {
   fn from(value: Box<dyn std::error::Error>) -> Self {
     Error::new(ErrorKind::Unknown, Some(value.to_string()), None)
+  }
+}
+
+impl<T> From<PoisonError<T>> for Error {
+  fn from(value: PoisonError<T>) -> Self {
+    Error::new(ErrorKind::Sync, Some(value.to_string()), None)
+  }
+}
+
+impl From<ParseIntError> for Error {
+  fn from(value: ParseIntError) -> Self {
+    Error::new(ErrorKind::Parse, Some(value.to_string()), None)
+  }
+}
+
+impl From<Utf8Error> for Error {
+  fn from(value: Utf8Error) -> Self {
+    Error::new(ErrorKind::IO, Some(value.to_string()), None)
   }
 }

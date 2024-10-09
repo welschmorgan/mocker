@@ -1,42 +1,102 @@
 use std::{
   collections::VecDeque,
-  io::Write as _,
+  io::{stdout, Read, Write},
   net::{IpAddr, Shutdown, TcpListener, TcpStream},
-  sync::Arc,
+  sync::{Arc, Mutex},
   thread,
+  time::Duration,
 };
 
-use crate::Response;
+use log::{debug, error, info};
 
-pub trait Middleware: Send + Sync {
-  fn execute(&mut self, response: &mut Response) -> crate::Result<()>;
-}
+use crate::{Buffer, Config, Middleware, Middlewares, Request, Response, Router, Table};
 
-pub trait CorsMiddleware
-
+#[derive(Default)]
 pub struct Server {
-  listen_addr: IpAddr,
-  port: u16,
-  middlewares: Vec<Arc<dyn Middleware>>,
+  config: Config,
+  router: Arc<Router>,
+  middlewares: Vec<Arc<Mutex<dyn Middleware>>>,
 }
 
 impl Server {
-  pub fn new(listen_addr: IpAddr, port: u16) -> Self {
+  pub fn new(config: Config) -> Self {
     Self {
-      listen_addr,
-      port,
+      config: config.clone(),
+      router: Arc::new(Router::default().with_routes(config.routes)),
       middlewares: Vec::new(),
     }
   }
 
-  pub fn listen(self) -> crate::Result<()> {
-    let listener = TcpListener::bind(format!("{}:{}", self.listen_addr, self.port)).unwrap();
+  pub fn with_middleware<M: Middleware + 'static>(mut self, m: M) -> Self {
+    self.config.middlewares.push(m.name().clone());
+    self.middlewares.push(Arc::new(Mutex::new(m)));
+    self
+  }
 
+  pub fn with_middlewares<M: Middleware + 'static, I: IntoIterator<Item = M>>(
+    mut self,
+    ms: I,
+  ) -> Self {
+    for m in ms.into_iter() {
+      self = self.with_middleware(m);
+    }
+    self
+  }
+
+  pub fn with_config(mut self, c: Config) -> Self {
+    self.config = c;
+    self
+  }
+
+  pub fn banner<W: Write>(&self, mut w: W) -> crate::Result<()> {
+    writeln!(
+      w,
+      "🚀 Server running at \x1b[4m{}://{}:{}\x1b[0m\n",
+      "http", self.config.host, self.config.port
+    )?;
+    writeln!(
+      w,
+      "🚗 \x1b[1;4mRoutes\x1b[0m{}\n",
+      match self.config.routes.len() {
+        0 => String::new(),
+        n => format!(" ({})", n),
+      }
+    )?;
+    let mut routes = Table::new().with_line_prefix("  📍 ").with_separator(" │ ");
+    for route in &self.config.routes {
+      routes.push([
+        route
+          .methods()
+          .iter()
+          .map(|m| format!("{}", m))
+          .collect::<Vec<_>>()
+          .join(", "),
+        route.endpoint().clone(),
+        route.kind_str().to_string(),
+      ]);
+    }
+    routes.aligned().write(&mut w)?;
+    writeln!(w)?;
+    Ok(())
+  }
+
+  pub fn listen(mut self) -> crate::Result<()> {
+    self = self.init_middlewares()?;
+    self.banner(stdout())?;
+    let listener = TcpListener::bind(format!("{}:{}", self.config.host, self.config.port)).unwrap();
     let mut handles = VecDeque::new();
     for stream in listener.incoming() {
-      let stream = stream.unwrap();
+      let mut stream = stream.unwrap();
+      let middlewares = self.middlewares.clone();
+      let router = self.router.clone();
       handles.push_back(thread::spawn(move || {
-        Self::handle_request(stream, &self.middlewares)
+        if let Err(e) = Self::handle_request(&mut stream, &router, &middlewares) {
+          error!("Handler crashed: {}", e);
+          Response::default()
+            .with_status(500)
+            .with_body(format!("{}", e))
+            .write_to(&stream);
+        }
       }));
     }
     while let Some(handle) = handles.pop_front() {
@@ -45,18 +105,70 @@ impl Server {
     Ok(())
   }
 
-  fn handle_request(
-    mut stream: TcpStream,
-    middlewares: &Vec<Arc<dyn Fn(&mut Response) -> crate::Result<()>>>,
+  fn execute_middleware(
+    request: &Request,
+    mut response: Response,
+    middleware: &Arc<Mutex<dyn Middleware>>,
   ) -> crate::Result<Response> {
-    println!("Connection accepted from '{}'", stream.peer_addr()?);
+    let mut m = None;
+    loop {
+      match middleware.try_lock() {
+        Ok(g) => {
+          debug!("Executing middleware: {}", g.name());
+          m = Some(g);
+          break;
+        }
+        Err(e) => {
+          error!("Failed to lock middleware: {}", e);
+          thread::sleep(Duration::from_millis(10));
+        }
+      }
+    }
+    response = m.unwrap().execute(request, response)?;
+    Ok(response)
+  }
+
+  fn handle_request(
+    mut stream: &TcpStream,
+    router: &Router,
+    middlewares: &Vec<Arc<Mutex<dyn Middleware>>>,
+  ) -> crate::Result<Response> {
+    info!("Connection accepted from '{}'", stream.peer_addr()?);
+    let req = Request::from_reader(stream)?;
     let mut res = Response::default();
     for middleware in middlewares {
-      middleware(&mut res)?;
+      res = Self::execute_middleware(&req, res, middleware)?;
     }
-    res.write_to(&stream)?;
+    res = router.dispatch(&req, res)?;
+    let mut buf = vec![];
+    res.write_to(&mut buf)?;
+    debug!(
+      "Response: {}",
+      unsafe { std::str::from_utf8_unchecked(&buf) }.trim()
+    );
+    stream.write(&buf)?;
     stream.flush()?;
     stream.shutdown(Shutdown::Both)?;
     Ok(res)
+  }
+
+  fn init_middlewares(mut self) -> crate::Result<Self> {
+    #[cfg(feature = "cors")]
+    Middlewares::register(String::from(crate::cors::CORS_MW_NAME), || {
+      Ok(Arc::new(Mutex::new(crate::cors::CorsMiddleware::new())))
+    });
+    for mw_name in &self.config.middlewares {
+      let found = self.middlewares.iter().find(|mw| {
+        let g = mw.lock().expect("failed to lock middleware");
+        if g.name().eq_ignore_ascii_case(&mw_name) {
+          return true;
+        }
+        return false;
+      });
+      if found.is_none() {
+        self.middlewares.push(Middlewares::create(&mw_name)?)
+      }
+    }
+    Ok(self)
   }
 }

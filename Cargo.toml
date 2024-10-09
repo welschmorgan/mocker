@@ -1,5 +1,5 @@
 [package]
-name = "mocker"
+name = "mocker-core"
 version = "0.1.0"
 edition = "2021"
 description = "Mock api generator"
@@ -10,7 +10,8 @@ name = "mocker"
 path = "src/main.rs"
 
 [lib]
-name = "mocker"
+name = "mocker_core"
+crate-type = ["dylib", "rlib"]
 path = "src/lib/mod.rs"
 
 [features]
@@ -18,10 +19,16 @@ default = ["json"]
 json = ["dep:serde_json"]
 toml = ["dep:toml"]
 yaml = ["dep:serde_yml"]
+js = []
+cors = []
 
 [dependencies]
 clap = { version = "4.5.19", features = ["derive"] }
+lazy_static = "1.5.0"
+log = "0.4.22"
+pretty_env_logger = "0.5.0"
 serde = { version = "1.0.210", features = ["derive"] }
 serde_json = { version = "1.0.128", optional = true }
 serde_yml = { version = "0.0.12", optional = true }
+strum = { version = "0.26.3", features = ["derive"] }
 toml = { version = "0.8.19", optional = true }
