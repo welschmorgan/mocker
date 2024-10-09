@@ -143,6 +143,18 @@ impl TryFrom<u16> for Status {
 }
 
 impl Status {
+  pub fn code(&self) -> u16 {
+    self.descr().0
+  }
+
+  pub fn text(&self) -> &'static str {
+    self.descr().1
+  }
+
+  pub fn details(&self) -> &'static str {
+    self.descr().2
+  }
+
   pub fn descr(&self) -> (u16, &'static str, &'static str) {
     match self {
       Self::Continue => (100, "Continue", "	Attente de la suite de la requête."),
@@ -529,6 +541,15 @@ impl Buffer {
     &mut self.start_line
   }
 
+  pub fn header<K: AsRef<str>>(&self, uk: K) -> Option<&String> {
+    self.headers.iter().find_map(|(k, v)| {
+      if k.eq_ignore_ascii_case(uk.as_ref()) {
+        return Some(v);
+      }
+      None
+    })
+  }
+
   pub fn headers(&self) -> &Vec<(String, String)> {
     &self.headers
   }
@@ -608,7 +629,7 @@ impl FromStr for Buffer {
       .filter_map(|h| {
         if h.is_ok() {
           let kv = h.as_ref().ok().unwrap();
-          return Some((kv.0, kv.1));
+          return Some((kv.0, kv.1.trim()));
         }
         None
       })

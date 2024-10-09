@@ -1,9 +1,12 @@
 use std::{
+  collections::HashMap,
   io::Read,
   ops::{Deref, DerefMut},
 };
 
-use crate::{Buffer, Method};
+use serde::{de::DeserializeOwned, Deserialize};
+
+use crate::{Buffer, Error, ErrorKind, Method, Status, Value};
 
 #[derive(Clone, Default)]
 pub struct Request(Buffer);
@@ -90,6 +93,78 @@ impl Request {
   }
   pub fn set_header<K: AsRef<str>, V: AsRef<str>>(&mut self, k: K, v: V) {
     self.0.set_header(k, v);
+  }
+
+  pub fn parse_body<T: DeserializeOwned>(&self) -> crate::Result<T> {
+    let body = format!("{}\n", std::str::from_utf8(self.body())?.trim());
+    let content_type = match self.header("Content-Type") {
+      Some(v) => v,
+      None => {
+        return Err(Error::new(
+          ErrorKind::Api(Status::BadRequest),
+          Some(format!("Missing `Content-Type` header")),
+          None,
+        ));
+      }
+    };
+    #[cfg(feature = "json")]
+    if content_type.eq_ignore_ascii_case("application/json") {
+      let ret: T = serde_json::from_str(&body).map_err(|e| {
+        let mut arrowed_body = body
+          .to_string()
+          .lines()
+          .map(|line| line.to_string())
+          .collect::<Vec<_>>();
+        let line_id = e.line().min(arrowed_body.len());
+        arrowed_body.insert(
+          line_id,
+          format!(
+            "{}\x1b[0;31m⮬\x1b[0m \x1b[1mhere\x1b[0m",
+            " ".repeat(e.column() - 1)
+          ),
+        );
+        Error::new(
+          ErrorKind::Parse,
+          Some(format!(
+            "failed to deserialize request body, {}\n--------------------\n{}",
+            e,
+            arrowed_body.join("\n")
+          )),
+          None,
+        )
+      })?;
+      return Ok(ret);
+    }
+    #[cfg(feature = "toml")]
+    if content_type.eq_ignore_ascii_case("application/toml") {
+      let ret: T = toml::from_str(&body).map_err(|e| {
+        Error::new(
+          ErrorKind::Parse,
+          Some(format!("failed to deserialize request body, {}", e)),
+          None,
+        )
+      })?;
+      return Ok(ret);
+    }
+    #[cfg(feature = "yaml")]
+    if content_type.eq_ignore_ascii_case("application/yaml") {
+      let ret: T = serde_yml::from_str(&body).map_err(|e| {
+        Error::new(
+          ErrorKind::Parse,
+          Some(format!("failed to deserialize request body, {}", e)),
+          None,
+        )
+      })?;
+      return Ok(ret);
+    }
+    Err(Error::new(
+      ErrorKind::Api(Status::InternalServerError),
+      Some(format!(
+        "Cannot deserialize body of type '{}', missing feature",
+        content_type
+      )),
+      None,
+    ))
   }
 }
 

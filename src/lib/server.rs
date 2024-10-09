@@ -91,11 +91,11 @@ impl Server {
       let router = self.router.clone();
       handles.push_back(thread::spawn(move || {
         if let Err(e) = Self::handle_request(&mut stream, &router, &middlewares) {
-          error!("Handler crashed: {}", e);
-          Response::default()
-            .with_status(500)
-            .with_body(format!("{}", e))
-            .write_to(&stream);
+          error!("Handler crashed: {}", &e);
+          let res: Response = e.into();
+          if let Err(we) = res.write_to(&stream) {
+            error!("Failed to write response: {}", we);
+          }
         }
       }));
     }

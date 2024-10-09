@@ -5,6 +5,8 @@ use std::{
   sync::{Arc, PoisonError},
 };
 
+use crate::Status;
+
 pub type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Debug, Clone, Copy)]
@@ -12,6 +14,7 @@ pub enum ErrorKind {
   IO,
   Sync,
   Parse,
+  Api(Status),
   Unknown,
 }
 
@@ -38,12 +41,25 @@ impl Error {
     }
   }
 
+  pub fn kind(&self) -> ErrorKind {
+    self.kind
+  }
+
+  pub fn message(&self) -> Option<&String> {
+    self.message.as_ref()
+  }
+
+  pub fn cause(&self) -> Option<&Arc<dyn std::error::Error>> {
+    self.cause.as_ref()
+  }
+
   pub fn kind_as_str(&self) -> &'static str {
     match self.kind {
       ErrorKind::IO => "i/o",
       ErrorKind::Unknown => "unknown",
       ErrorKind::Sync => "sync",
       ErrorKind::Parse => "parse",
+      ErrorKind::Api(_) => "api",
     }
   }
 }

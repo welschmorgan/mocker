@@ -7,120 +7,66 @@ use std::{
 
 use log::debug;
 
-use crate::{Error, ErrorKind, Method, Request, Response, Route, RouteKind, Store};
+use crate::{Error, ErrorKind, Method, Request, Response, Route, RouteKind, Status, Store, Value};
 
 pub trait RouteHandler {
   fn handle(&self, req: &Request, res: Response) -> crate::Result<Response>;
 }
 
-#[cfg(feature = "json")]
 pub struct StoreRouteHandler {
   route: Route,
-  store: Mutex<Store<serde_json::Value>>,
+  store: Mutex<Store>,
 }
 
-#[cfg(feature = "json")]
 impl StoreRouteHandler {
   pub fn new<P: AsRef<Path>, I: AsRef<str>>(route: Route, path: P, identifier: I) -> Self {
     Self {
       route,
-      store: Mutex::new(Store::new(
-        path,
-        identifier,
-        |items, writer| {
-          serde_json::to_writer_pretty(writer, items)?;
-          Ok(())
-        },
-        |reader| {
-          let items = serde_json::from_reader(reader)?;
-          Ok(items)
-        },
-      )),
+      store: Mutex::new(Store::json(path, identifier)),
     }
   }
 
   pub fn load_entity(&self, req: &Request) -> crate::Result<Response> {
     let mut store = self.store.lock()?;
     let (id_key, id_value) = match req.query_param(store.identifier()) {
-      Some((key, Some(val))) => (key.clone(), val.clone()),
+      Some((key, Some(val))) => (key.clone(), Value::from(val.clone())),
       Some((key, None)) => {
-        return Ok(Response::default().with_status(400).with_body(format!(
+        return Ok(Response::default().with_status_code(400).with_body(format!(
           "Identifier '{}' was found in query params but has no value",
           store.identifier()
         )))
       }
       None => {
-        return Ok(Response::default().with_status(400).with_body(format!(
+        return Ok(Response::default().with_status_code(400).with_body(format!(
           "Identifier '{}' not found in query params",
           store.identifier()
         )))
       }
     };
     store.load()?;
-    match store.find(&serde_json::to_value(&id_value)?) {
-      Some(obj) => {
-        let json = serde_json::to_string(obj)?;
-        return Ok(
-          Response::default()
-            .with_status(200)
-            .with_header("Content-Type", "application/json")
-            .with_body(json),
-        );
-      }
-      None => {
-        return Ok(Response::default().with_status(404).with_body(format!(
-          "Entity with `{}` = {:?} was not found",
-          id_key, id_value
-        )));
-      }
+    match store.find(&id_value) {
+      Some(obj) => Response::api(Status::OK, obj),
+      None => Ok(Response::default().with_status_code(404).with_body(format!(
+        "Entity with `{}` = {} was not found",
+        id_key, id_value
+      ))),
     }
   }
 
   pub fn create_entity(&self, req: &Request) -> crate::Result<Response> {
     let mut store = self.store.lock()?;
     store.load()?;
-    let body = format!("{}\n", std::str::from_utf8(req.body())?.trim());
-    let new_data: HashMap<String, serde_json::Value> =
-      serde_json::from_str(&body).map_err(|e| {
-        let mut arrowed_body = body
-          .to_string()
-          .lines()
-          .map(|line| line.to_string())
-          .collect::<Vec<_>>();
-        let line_id = e.line().min(arrowed_body.len());
-        arrowed_body.insert(
-          line_id,
-          format!(
-            "{}\x1b[0;31m⮬\x1b[0m \x1b[1mhere\x1b[0m",
-            " ".repeat(e.column() - 1)
-          ),
-        );
-        Error::new(
-          ErrorKind::Parse,
-          Some(format!(
-            "failed to deserialize request body, {}\n--------------------\n{}",
-            e,
-            arrowed_body.join("\n")
-          )),
-          None,
-        )
-      })?;
+    let new_data = req.parse_body::<HashMap<String, Value>>()?;
     let id = match store.id_field(&new_data) {
-      Some((_key, value)) => format!("{}", value),
-      None => "-1".to_string(),
+      Some((_key, value)) => value.clone(),
+      None => Value::Null,
     };
     store.create(new_data)?;
     store.save()?;
-    return Ok(
-      Response::default()
-        .with_status(201)
-        .with_header("Content-Type", "application/json")
-        .with_body(id),
-    );
+    return Response::api(Status::Created, &id);
   }
 }
 
-#[cfg(feature = "json")]
 impl RouteHandler for StoreRouteHandler {
   fn handle(&self, req: &Request, res: Response) -> crate::Result<Response> {
     match req.method().expect("Missing method") {
@@ -218,7 +164,7 @@ impl Router {
         debug!("Found handler for '{}'", endpoint);
         handler.handle(req, res)
       }
-      None => Ok(Response::default().with_status(404)),
+      None => Ok(Response::default().with_status_code(404)),
     }
   }
 
